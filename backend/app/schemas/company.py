@@ -1,4 +1,5 @@
 from html import unescape
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,5 +22,6 @@ class Founder(UnescapedModel):
     name: str
     role: str | None
     confidence: float  # 0 to 1, as reported by the model
+    source: Literal["site", "web"]  # the company's own pages, or a web search result
     source_url: str  # page where the evidence was found (set by us, not the model)
     evidence: str  # exact passage from that page naming this person and their role

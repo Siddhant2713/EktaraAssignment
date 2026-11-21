@@ -9,6 +9,7 @@ export type Founder = {
   name: string
   role: string | null
   confidence: number
+  source: 'site' | 'web' // the company's own pages, or a web search result
   source_url: string
   evidence: string
 }
@@ -32,6 +33,7 @@ export type ErrorCode =
   | 'SITE_BLOCKED'
   | 'NO_CONTENT'
   | 'LLM_FAILED'
+  | 'SEARCH_FAILED'
   | 'INTERNAL_ERROR'
 
 export type ProgressEvent = { type: 'progress'; step: string; message: string }

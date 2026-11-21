@@ -6,6 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import analyze, health
 
 logging.basicConfig(level=logging.INFO)
+logging.getLogger("trafilatura").setLevel(logging.ERROR)  # warns about every JS-only page
+for noisy in ("httpx", "httpx2", "primp", "ddgs", "google_genai"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)  # one INFO line per request is noise
 
 app = FastAPI(title="Ektara")
 

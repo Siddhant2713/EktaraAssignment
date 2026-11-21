@@ -14,6 +14,7 @@ type Entry = {
   checked: boolean
   evidence?: string // only for people the backend found; hand-added ones have none
   sourceUrl?: string
+  source?: 'site' | 'web'
 }
 
 export function FounderConfirm({ result, onConfirm }: Props) {
@@ -28,6 +29,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
       checked: true,
       evidence: f.evidence,
       sourceUrl: f.source_url,
+      source: f.source,
     })),
   )
   const [newName, setNewName] = useState('')
@@ -68,8 +70,8 @@ export function FounderConfirm({ result, onConfirm }: Props) {
         <h3>{founders.length ? 'Who should the email go to?' : 'Who is the founder?'}</h3>
         <p className="muted">
           {founders.length
-            ? `Found ${founders.length} on the site. Tick who to write to and fix any names.`
-            : "The site doesn't name a founder. Add one below."}
+            ? `Found ${founders.length}. Tick who to write to and fix any names.`
+            : "Couldn't find a founder on the site or the web. Add one below."}
         </p>
 
         <ul className="people">
@@ -99,7 +101,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
                 <p className="evidence">
                   “{entry.evidence}”{' '}
                   <a href={entry.sourceUrl} target="_blank" rel="noreferrer">
-                    source
+                    {entry.source === 'web' ? 'web search result' : 'company site'}
                   </a>
                 </p>
               )}
@@ -133,18 +135,20 @@ export function FounderConfirm({ result, onConfirm }: Props) {
         </button>
       </form>
 
-      <details>
-        <summary>{pages_scraped.length} page(s) read</summary>
-        <ul>
-          {pages_scraped.map((url) => (
-            <li key={url}>
-              <a href={url} target="_blank" rel="noreferrer">
-                {url}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </details>
+      {pages_scraped.length > 0 && (
+        <details>
+          <summary>{pages_scraped.length} site page(s) read</summary>
+          <ul>
+            {pages_scraped.map((url) => (
+              <li key={url}>
+                <a href={url} target="_blank" rel="noreferrer">
+                  {url}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   )
 }

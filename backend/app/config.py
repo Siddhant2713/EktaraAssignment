@@ -12,3 +12,9 @@ MAX_PAGES = 5  # homepage + up to 4 extra pages (about, team, ...)
 MAX_FETCH_ATTEMPTS = 7  # extra pages we try to fetch to fill those slots (some will 404)
 MAX_CHARS_PER_PAGE = 6000
 FETCH_TIMEOUT = 10.0  # seconds
+
+# when the site yields less text than this, treat it as unreadable and use web search instead
+MIN_SITE_CHARS = 300
+
+# web search fallback
+SEARCH_RESULTS_PER_QUERY = 6
