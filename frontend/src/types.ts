@@ -41,3 +41,43 @@ export type ResultEvent<T> = { type: 'result'; data: T }
 export type ErrorEvent = { type: 'error'; step: string; code: ErrorCode; message: string }
 
 export type StreamEvent<T> = ProgressEvent | ResultEvent<T> | ErrorEvent
+
+// ---- draft step (mirrors backend/app/schemas/draft.py) ----
+
+export type Tone = 'casual' | 'formal' | 'short'
+
+export type FactKind = 'own_words' | 'decision' | 'launch' | 'career' | 'milestone' | 'other'
+
+export type Fact = {
+  id: number
+  person: string
+  text: string
+  quote: string
+  source_url: string
+  source_title: string
+  kind: FactKind
+  specificity: number
+  date: string | null
+}
+
+export type Opener = {
+  to: string
+  text: string
+  fact_ids: number[]
+  angle: string
+}
+
+export type DraftResult = {
+  openers: Opener[]
+  facts: Fact[]
+  used_fallback: boolean
+}
+
+export type DraftRequestBody = {
+  url: string
+  company: Company
+  founders: Person[]
+  pitch: string
+  tone: Tone
+  facts?: Fact[] // sent back on regenerate so the server skips the research
+}

@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import type { AnalyzeResult, Person } from '../types'
 
+const MAX_PEOPLE = 2 // one email goes to one person; two keeps research time reasonable
+
 type Props = {
   result: AnalyzeResult
   onConfirm: (people: Person[]) => void
@@ -26,7 +28,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
       id: i,
       name: f.name,
       role: f.role ?? '',
-      checked: true,
+      checked: i < MAX_PEOPLE,
       evidence: f.evidence,
       sourceUrl: f.source_url,
       source: f.source,
@@ -36,6 +38,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
   const [newRole, setNewRole] = useState('')
 
   const selected = entries.filter((e) => e.checked && e.name.trim())
+  const atLimit = selected.length >= MAX_PEOPLE
 
   function update(id: number, patch: Partial<Entry>) {
     setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)))
@@ -44,7 +47,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
   function addPerson() {
     if (!newName.trim()) return
     const id = nextId.current++
-    setEntries((prev) => [...prev, { id, name: newName.trim(), role: newRole.trim(), checked: true }])
+    setEntries((prev) => [...prev, { id, name: newName.trim(), role: newRole.trim(), checked: !atLimit }])
     setNewName('')
     setNewRole('')
   }
@@ -70,7 +73,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
         <h3>{founders.length ? 'Who should the email go to?' : 'Who is the founder?'}</h3>
         <p className="muted">
           {founders.length
-            ? `Found ${founders.length}. Tick who to write to and fix any names.`
+            ? `Found ${founders.length}. Tick up to ${MAX_PEOPLE} to write to and fix any names.`
             : "Couldn't find a founder on the site or the web. Add one below."}
         </p>
 
@@ -81,6 +84,7 @@ export function FounderConfirm({ result, onConfirm }: Props) {
                 <input
                   type="checkbox"
                   checked={entry.checked}
+                  disabled={!entry.checked && atLimit}
                   onChange={(e) => update(entry.id, { checked: e.target.checked })}
                   aria-label={`Include ${entry.name}`}
                 />

@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import analyze, health
+from app.routers import analyze, draft, health
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("trafilatura").setLevel(logging.ERROR)  # warns about every JS-only page
@@ -21,3 +21,4 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(analyze.router)
+app.include_router(draft.router)

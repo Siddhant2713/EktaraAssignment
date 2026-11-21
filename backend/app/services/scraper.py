@@ -39,40 +39,64 @@ MAX_PROFILE_LINKS = 8
 LINKEDIN_PERSON = re.compile(r"^https?://([a-z]{2,3}\.)?linkedin\.com/in/[^/?#]+", re.I)
 
 
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers=HEADERS, timeout=config.FETCH_TIMEOUT, follow_redirects=False)
+
+
 async def scrape_site(url: str) -> list[ScrapedPage]:
     """Fetch the homepage plus a few about/team pages and return their readable text."""
-    async with httpx.AsyncClient(headers=HEADERS, timeout=config.FETCH_TIMEOUT, follow_redirects=False) as client:
+    async with _client() as client:
         home_url, home_html = await _fetch(client, url)  # failure here is fatal
         home_page, links = await asyncio.to_thread(_parse, home_url, home_html)
-        pages = [home_page]
 
-        seen_urls = {_key(url), _key(home_url)}
-        seen_text = {home_page.text[:300]}
         candidates = _with_guesses(links, home_url)[: config.MAX_FETCH_ATTEMPTS]
+        extra = await _collect(
+            client,
+            candidates,
+            room=config.MAX_PAGES - 1,
+            seen_urls={_key(url), _key(home_url)},
+            seen_text={home_page.text[:300]},
+        )
 
-        results = await asyncio.gather(*(_fetch(client, c) for c in candidates), return_exceptions=True)
-        for result in results:  # results are in candidate order, so better candidates win the slots
-            if len(pages) >= config.MAX_PAGES:
-                break
-            if isinstance(result, PipelineError):
-                continue  # a missing /team page shouldn't kill the run
-            if isinstance(result, BaseException):
-                raise result
-            final_url, html = result
-            if _key(final_url) in seen_urls:
-                continue  # redirected to a page we already have
-            page, _ = await asyncio.to_thread(_parse, final_url, html)
-            if not page.text or page.text[:300] in seen_text:
-                continue  # empty, or a "soft 404" that serves the homepage for every path
-            seen_urls.add(_key(final_url))
-            seen_text.add(page.text[:300])
-            pages.append(page)
-
-    pages = [p for p in pages if p.text]
+    pages = [p for p in [home_page, *extra] if p.text]
     if not pages:
         raise PipelineError(
             STEP, ErrorCode.NO_CONTENT, "no readable text found; the site may render its content with JavaScript"
         )
+    return pages
+
+
+async def fetch_pages(urls: list[str], limit: int) -> list[ScrapedPage]:
+    """Fetch arbitrary URLs (e.g. search results) and return up to `limit` readable, distinct pages.
+
+    Pages that fail to load are skipped, so the result may be shorter than `limit`, or empty.
+    """
+    async with _client() as client:
+        return await _collect(client, urls, room=limit, seen_urls=set(), seen_text=set())
+
+
+async def _collect(
+    client: httpx.AsyncClient, urls: list[str], room: int, seen_urls: set[str], seen_text: set[str]
+) -> list[ScrapedPage]:
+    """Fetch `urls` concurrently; keep up to `room` readable pages we don't already have, in input order."""
+    results = await asyncio.gather(*(_fetch(client, u) for u in urls), return_exceptions=True)
+    pages: list[ScrapedPage] = []
+    for result in results:  # results are in input order, so earlier (better) URLs win the slots
+        if len(pages) >= room:
+            break
+        if isinstance(result, PipelineError):
+            continue  # one missing or blocked page shouldn't kill the run
+        if isinstance(result, BaseException):
+            raise result
+        final_url, html = result
+        if _key(final_url) in seen_urls:
+            continue  # redirected to a page we already have
+        page, _ = await asyncio.to_thread(_parse, final_url, html)
+        if not page.text or page.text[:300] in seen_text:
+            continue  # empty, or a "soft 404" that serves the same text for every path
+        seen_urls.add(_key(final_url))
+        seen_text.add(page.text[:300])
+        pages.append(page)
     return pages
 
 

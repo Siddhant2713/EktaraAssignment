@@ -5,15 +5,13 @@ from urllib.parse import urlparse
 from app import config
 from app.schemas.analyze import AnalyzeResult
 from app.schemas.company import Company, Founder
-from app.schemas.events import ErrorCode, ErrorEvent, ProgressEvent, ResultEvent
+from app.schemas.events import ErrorCode, ErrorEvent, Event, ProgressEvent, ResultEvent
 from app.services.errors import PipelineError
 from app.services.extractor import extract_company_and_founders
 from app.services.scraper import scrape_site
 from app.services.web_search import search_pages
 
 log = logging.getLogger(__name__)
-
-Event = ProgressEvent | ResultEvent | ErrorEvent
 
 # Scrape failures where the company may still be findable on the web (INVALID_URL is not one of them)
 SITE_UNUSABLE = {ErrorCode.SITE_BLOCKED, ErrorCode.NO_CONTENT, ErrorCode.SITE_UNREACHABLE}

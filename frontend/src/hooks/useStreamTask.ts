@@ -1,39 +1,47 @@
 import { useRef, useState } from 'react'
-import { streamAnalyze } from '../api/analyze'
-import type { AnalyzeResult, ErrorEvent } from '../types'
+import type { ErrorEvent, StreamEvent } from '../types'
 
-type Phase = 'idle' | 'analyzing' | 'confirm' | 'error'
+export type Phase = 'idle' | 'running' | 'done' | 'error'
+export type ErrorInfo = Pick<ErrorEvent, 'code' | 'message'>
 
-type ErrorInfo = Pick<ErrorEvent, 'code' | 'message'>
+type Starter<TArgs, TResult> = (
+  args: TArgs,
+  onEvent: (event: StreamEvent<TResult>) => void,
+  signal: AbortSignal,
+) => Promise<void>
 
-export function useAnalyze() {
+/**
+ * Runs one streaming backend call and tracks it: progress lines while it runs, then a result or an error.
+ * Shared by the analyze and draft steps.
+ */
+export function useStreamTask<TArgs, TResult>(start: Starter<TArgs, TResult>) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [progress, setProgress] = useState<string[]>([])
-  const [result, setResult] = useState<AnalyzeResult | null>(null)
+  const [result, setResult] = useState<TResult | null>(null)
   const [error, setError] = useState<ErrorInfo | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  async function analyze(url: string) {
+  async function run(args: TArgs) {
     abortRef.current?.abort() // drop any run still in flight
     const controller = new AbortController()
     abortRef.current = controller
 
-    setPhase('analyzing')
+    setPhase('running')
     setProgress([])
     setResult(null)
     setError(null)
 
     let finished = false
     try {
-      await streamAnalyze(
-        url,
+      await start(
+        args,
         (event) => {
           if (event.type === 'progress') {
             setProgress((p) => [...p, event.message])
           } else if (event.type === 'result') {
             finished = true
             setResult(event.data)
-            setPhase('confirm')
+            setPhase('done')
           } else {
             finished = true
             setError({ code: event.code, message: event.message })
@@ -58,7 +66,7 @@ export function useAnalyze() {
     setError(null)
   }
 
-  return { phase, progress, result, error, analyze, reset }
+  return { phase, progress, result, error, run, reset }
 }
 
 function networkMessage(e: unknown): string {

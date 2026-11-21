@@ -31,3 +31,6 @@ class ErrorEvent(BaseModel):
     step: str
     code: ErrorCode
     message: str
+
+
+Event = ProgressEvent | ResultEvent | ErrorEvent

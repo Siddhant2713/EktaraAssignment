@@ -6,6 +6,8 @@ load_dotenv()  # reads backend/.env if it exists
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.1-flash-lite"
+# the model that writes the openers; extraction can stay on a cheap model, but the writing benefits from a better one
+GEMINI_DRAFT_MODEL = os.getenv("GEMINI_DRAFT_MODEL") or GEMINI_MODEL
 
 # scraping limits
 MAX_PAGES = 5  # homepage + up to 4 extra pages (about, team, ...)
