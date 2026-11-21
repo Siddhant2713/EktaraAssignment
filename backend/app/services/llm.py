@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from app import config
 from app.schemas.events import ErrorCode
 from app.services.errors import PipelineError
+from app.services.limiter import gemini_slots
 
 log = logging.getLogger(__name__)
 
@@ -43,16 +44,18 @@ async def generate_json(
         attempts = 2 if index == 0 else 1  # one retry on the main model, a single try on the fallback
         for attempt in range(attempts):
             try:
-                response = await client.aio.models.generate_content(
-                    model=name,
-                    contents=prompt,
-                    config={
-                        "system_instruction": system_prompt,
-                        "response_mime_type": "application/json",
-                        "response_json_schema": schema.model_json_schema(),
-                        "temperature": temperature,
-                    },
-                )
+                # the slot is held only for the call itself, so a retry pause below does not block anyone else
+                async with gemini_slots.slot():
+                    response = await client.aio.models.generate_content(
+                        model=name,
+                        contents=prompt,
+                        config={
+                            "system_instruction": system_prompt,
+                            "response_mime_type": "application/json",
+                            "response_json_schema": schema.model_json_schema(),
+                            "temperature": temperature,
+                        },
+                    )
             except genai_errors.APIError as e:
                 error = e
                 log.warning("Gemini call failed (model %s, attempt %d/%d): %s", name, attempt + 1, attempts, e)

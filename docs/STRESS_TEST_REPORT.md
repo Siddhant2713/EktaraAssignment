@@ -2,22 +2,23 @@
 
 **Date:** 2026-11-21
 **System under test:** `POST /api/analyze` and `POST /api/draft` (FastAPI backend)
-**Status of this report:** baseline measured **before** any hardening, plus the re-runs after **fix 1 (scraper limits)**, **fix 2 (bounded prompts)** and **fix 3 (deadline, retry, fallback)**. Fixes 4 to 6 are still open; section 8 is updated as each one lands.
+**Status of this report:** baseline measured **before** any hardening, followed by the results after each of the six fixes. **All six fixes are complete**; the offline suite has no failures.
 
 ## 1. Summary
 
 The core logic is sound. The failures are not in what the system decides, but in what it **does not limit**.
 
-| | Baseline | After fix 1 (scraper) | After fix 2 (prompts) | After fix 3 (resilience) |
-|---|---|---|---|---|
-| Offline suite | **134 passed, 35 failed**, 11 skipped | 151 passed, 27 failed, 11 skipped | 183 passed, 22 failed, 11 skipped | **212 passed, 19 failed**, 11 skipped, 27 s |
-| Scraper hostile tests | 16 passed, 8 failed | **33 passed, 0 failed** | 33 / 0 | 33 / 0 |
-| API validation tests | 16 passed, 3 failed | same | **all passing** | all passing |
-| Prompt-bound tests | n/a | n/a | **27 / 0** | 27 / 0 |
-| Resilience tests (retry, fallback, deadline) | n/a | n/a | n/a | **23 / 0** |
-| Fault-injection tests | 17 passed, 4 failed | same | 18 passed, 3 failed | **25 / 0** |
-| Live suite (real Gemini, real web) | **11 passed**, 0 failed | 9 passed, 2 failed (Gemini capacity) | inconclusive (Gemini 503s); targeted retries passed | inconclusive (Gemini 503s); targeted checks passed (see 3.3) |
-| Total tests | 180 | 189 | 216 | 242 |
+| | Baseline | After fix 1 (scraper) | After fix 2 (prompts) | After fix 3 (resilience) | After fixes 4 to 6 (final) |
+|---|---|---|---|---|---|
+| Offline suite | **134 passed, 35 failed**, 11 skipped | 151 / 27 | 183 / 22 | 212 / 19 | **265 passed, 0 failed**, 11 skipped, 46 s |
+| Scraper hostile tests | 16 passed, 8 failed | 33 / 0 | 33 / 0 | 33 / 0 | 33 / 0 |
+| SSRF tests | 24 passed, 6 failed | 24 / 6 | 24 / 6 | 24 / 6 | **30 / 0** |
+| Injection guardrail tests | 2 passed, 12 failed | 2 / 12 | 3 / 11 | 3 / 11 | **14 / 0** |
+| Load tests | 1 passed, 2 failed | 1 / 2 | 1 / 2 | 1 / 2 | **3 / 0** |
+| API validation tests | 16 passed, 3 failed | 16 / 3 | **all passing** | all passing | all passing |
+| Prompt-bound, resilience and limit tests (added during fixes 2 to 6) | n/a | n/a | 27 / 0 | 50 / 0 | **84 / 0** |
+| Live suite (real Gemini, real web) | **11 passed**, 0 failed | 9 / 2 | inconclusive (Gemini 503s) | inconclusive | **8 passed, 0 failed, 3 skipped** (Gemini overloaded) |
+| Total tests | 180 | 189 | 216 | 242 | 276 |
 
 The 35 failures are tests that state the behaviour we want. They fail on purpose until the guardrail exists. They reduce to **seven distinct problems**, and every one of them is a missing limit or a missing check, not a logic error:
 
@@ -26,12 +27,12 @@ The 35 failures are tests that state the behaviour we want. They fail on purpose
 | 1 | The scraper has no resource limits (**fixed**, see 3.1) | **High** | 40 MB page fully downloaded; a few-KB gzip bomb used **326 MB** of memory; a slow server held a request open **26 s** |
 | 2 | Nothing bounds what is sent into LLM prompts (**fixed**, see 3.2) | **High** | one page injected **409,431** characters into a prompt (limit 8,000); 500 pages built a **3,022,388**-character prompt |
 | 3 | No overall deadline, no retry, verbose errors (**fixed**, see 3.3) | **High** | a hung Gemini call blocks forever; one transient 503 fails the request; a 429 shows a **1,354**-character provider dump |
-| 4 | No concurrency limits | Medium | 60 requests made **60** simultaneous Gemini calls; 40 made **40** simultaneous searches |
-| 5 | Prompt-injection guardrails are thin | Medium | links, emails and phone numbers pass the opener lint; untrusted text is not fenced; `font-size:0` text is read |
-| 6 | Any network port is allowed | Low | `:22`, `:6379`, `:9200` accepted |
+| 4 | No concurrency limits (**fixed**, see 3.4) | Medium | 60 requests made **60** simultaneous Gemini calls; 40 made **40** simultaneous searches |
+| 5 | Prompt-injection guardrails are thin (**fixed**, see 3.5) | Medium | links, emails and phone numbers pass the opener lint; untrusted text is not fenced; `font-size:0` text is read |
+| 6 | Any network port is allowed (**fixed**, see 3.6) | Low | `:22`, `:6379`, `:9200` accepted |
 | 7 | Client-supplied fact fields have no ranges (**fixed**, see 3.2) | Low | an out-of-range value (`specificity: 99` or `id: -5`) is accepted |
 
-Severity assumes the service could be hosted publicly. For a single-user local run, problems 1 to 3 are robustness issues and 4 to 7 are hardening.
+**All seven problems are now fixed** (sections 3.1 to 3.7, results in section 8). Severity assumes the service could be hosted publicly. For a single-user local run, problems 1 to 3 are robustness issues and 4 to 7 are hardening.
 
 ## 2. Scope and method
 
@@ -182,6 +183,32 @@ An honest note on severity: the 3,022,388-character case cannot happen through t
 
 **Fix:** shared limits across all requests (about 8 Gemini calls and 3 searches at once), and optionally a "busy, try again" response when the queue is long.
 
+**Status: fixed.** Every Gemini call, search query and page download now goes through a shared limiter (`services/limiter.py`). The extra calls wait for a free slot instead of all running at once. The same load tests, before and after:
+
+| Metric | Before (60 / 40 requests) | After |
+|---|---|---|
+| Peak concurrent Gemini calls | **60** (site path), **40** (fallback path) | **6** |
+| Peak concurrent searches | **40** | **2** |
+| Requests that succeeded | 60 / 60 and 40 / 40 | 60 / 60 and 40 / 40: nobody fails because of waiting |
+| Wall time, site path | 1.7 s | 4.1 s (p95 latency 1.4 s to 3.5 s) |
+| Wall time, web-fallback path (fake 0.2 s search) | 2.2 s | 13.4 s |
+| Worst event-loop lag | 678 ms | 686 ms (unchanged, see below) |
+| Memory growth | 30 MB | 24 MB |
+
+Defaults are 6 Gemini calls, 2 searches and 24 page downloads at once, set with `MAX_CONCURRENT_GEMINI`, `MAX_CONCURRENT_SEARCHES` and `MAX_CONCURRENT_FETCHES`.
+
+Design details that are tested:
+- The slot is held only during the call itself. A retry pause does not hold it, so another request can run while a failed one waits to retry.
+- Time spent waiting for a slot counts toward the request's overall deadline, so nothing can wait forever. A request that times out gives its slot back (a later request can still get it).
+- The page-download wait sits outside each page's own 12 s deadline, so a busy server does not make healthy pages look slow.
+- One limiter is kept per event loop, because a semaphore that has made someone wait is tied to the loop it ran on.
+
+**Trade-offs, stated plainly.**
+- A burst gets slower instead of failing. That is the point, but it is real latency.
+- With real search latency (about 3 s per query) and 2 search slots, a burst of 40 fallback requests would need about 3 minutes of search time, so the last of them would hit the 90 s deadline and end in a clear `TIMEOUT` error. That is far better than a storm of empty results reported as "no founder found", but it means real capacity for fallback-heavy traffic is low. The proper answer is caching analysis results by domain, which is not built.
+- This caps concurrency, not rate per minute. A free Gemini key can still hit its per-minute limit; the retry, the fallback model and the short error messages from fix 3 handle that case.
+- The event-loop lag (up to about 690 ms) is CPU-heavy page parsing briefly starving other work. It stays under the 1 s limit the test enforces, and this fix does not address it.
+
 ### 3.5 Prompt-injection guardrails are thin (Medium)
 
 **Tested:** offline guardrail checks, then the real model with attacks.
@@ -199,12 +226,27 @@ An honest note on severity: the 3,022,388-character case cannot happen through t
 
 **Fix:** reject URLs, emails and phone numbers in openers; fence untrusted text in tags and escape closers; add a "data, not instructions" line to the system prompts; strip `font-size:0` text.
 
-**Status: partly fixed.** Text hidden with `font-size:0` (and `opacity:0`, off-screen positioning, `display:none`, `visibility:hidden`, the `hidden` attribute and `aria-hidden`) is now removed before extraction, and structured-data names that are sentences or contain brackets are refused. Still open: rejecting links and contact details in openers, fencing untrusted text in prompts, and the "data, not instructions" line. A trade-off to know about: content inside a `hidden` panel (some tabs and accordions) is now skipped too.
+**Status: fixed.** What changed:
+
+| Before | After |
+|---|---|
+| Links, emails and phone numbers pass the opener lint | The lint rejects `http(s)://` and `www.` links, domain names (`evil.example/win`, `bit.ly/...`), email addresses and phone numbers, and the drafting prompt forbids them. All 6 attack payloads are now rejected. Ordinary prose is not (`Node.js`, `e.g.`, `5.5 million`, `$6M`, and a missing space after a full stop as in `works.So` are all accepted, tested). |
+| Untrusted text is mixed into prompts as plain text | The sender's pitch and the facts sit in `<pitch>` and `<facts>` blocks. Any `<` or `>` inside them becomes an entity, so a fact cannot close its block and speak as the prompt author (tested with a fake `</facts>` and `</pitch>`). |
+| System prompts never mention the issue | Every system prompt (extractor, fact extractor, drafter) says that supplied text is data, not instructions. |
+| Company text copied into system prompts | The company description is written by the model from a web page, then pasted into the **next call's system prompt**, where an injected instruction would carry more weight. It is now flattened to one line without tag or code characters, as are names and roles (tested with a poisoned description). |
+| Page text can forge another page's header | `###` inside page text is defanged, and the quote check sees exactly the text the model saw (tested). |
+| `font-size:0` text is read; structured-data "names" can be sentences | Fixed in fix 1. |
+
+**Residual risk, honestly.** Prompt injection cannot be fully eliminated. These guardrails limit what a successful injection can do: the output is structured text with no tools or actions, a founder still needs a word-for-word quote on a page, and an opener can no longer carry a link, email or phone number. The live injection tests (a poisoned page, a poisoned fact, a hostile pitch) all passed against the real model, but each ran once against a non-deterministic model, so treat that as encouraging, not proof.
+
+**Trade-off.** An opener that mentions a domain name on purpose (for example "dub.co") is rejected and regenerated. A false rejection costs a retry, which is cheaper than letting a link through.
 
 ### 3.6 Any network port is allowed (Low)
 
 **Measured:** `:22`, `:25`, `:3306`, `:5432`, `:6379` and `:9200` on a public address were all accepted. The error text differs between "timed out", "refused" and "HTTP 200", which lets someone probe which ports are open on a third party.
 **Fix:** allow only ports 80, 443, 8080 and 8443.
+
+**Status: fixed.** `_ensure_public` now refuses any other port and any invalid one (`:99999`, `:0`, `:abc`) with a clean `INVALID_URL` error, before any DNS lookup or connection. The check runs on every redirect hop. All 6 port tests pass, and the four allowed ports and URLs with no explicit port still work. Trade-off: a legitimate site served on an unusual port can no longer be analysed.
 
 ### 3.7 Client-supplied fact fields have no ranges (Low)
 
@@ -230,6 +272,8 @@ Covered by 3.2. Listed separately because the fix is small: `specificity` 1 to 5
 - `robots.txt` and the honesty of the Chrome user-agent string, which is an ethics and terms-of-service question and not a crash.
 - Request body size limits, authentication and per-IP rate limiting.
 - The frontend, which is checked only by typecheck and lint.
+- Real throughput of a burst against the live search backend. The load tests use fakes, and section 3.4 gives the arithmetic instead.
+- Caching results by domain, per-user rate limiting and authentication, none of which are built.
 
 ## 6. Remediation plan
 
@@ -238,9 +282,9 @@ Covered by 3.2. Listed separately because the fix is small: `specificity` 1 to 5
 | 1 | Scraper limits: streamed size cap, total time cap, validated and capped hints, strip `font-size:0` | 3.1, part of 3.2, part of 3.5 | **done** |
 | 2 | Bound everything entering prompts: total cap, field limits and ranges | 3.2, 3.7 | **done** |
 | 3 | Pipeline deadline, one retry on 429 and 503, optional fallback model, short error messages | 3.3 | **done** |
-| 4 | Shared concurrency limits for Gemini and search | 3.4 | open |
-| 5 | Injection guardrails: lint for links and contact details, fenced prompts, "data, not instructions" | 3.5 | open |
-| 6 | Port allowlist | 3.6 | open |
+| 4 | Shared concurrency limits for Gemini, search and page downloads | 3.4 | **done** |
+| 5 | Injection guardrails: lint for links and contact details, fenced prompts, "data, not instructions", flattened company text | 3.5 | **done** |
+| 6 | Port allowlist | 3.6 | **done** |
 
 ## 7. How to reproduce
 
@@ -255,21 +299,24 @@ pytest --live               # also run the real-Gemini and real-web tests
 
 ## 8. Results after fixes
 
-Updated as each fix lands. Fixes 1 to 3 are complete; the last column stays empty until the rest are done.
-
-| | Baseline | After fix 1 | After fix 2 | After fix 3 | After all fixes |
-|---|---|---|---|---|---|
-| Offline: passed / failed | 134 / 35 | 151 / 27 | 183 / 22 | 212 / 19 | |
-| 40 MB page: bytes read | 40 MB | 2.5 MB | 2.5 MB | 2.5 MB | |
-| Peak memory on gzip bomb | 326 MB | 18.3 MB | 18.3 MB | 18.3 MB | |
-| Time to give up on a slow-loris server | 26 s | 12.0 s | 12.0 s | 12.0 s | |
-| Page text from a 20,000-name structured-data block | 409,431 chars | 499 chars | 499 chars | 499 chars | |
-| Text hidden with `font-size:0` reaches the page text | yes | no | no | no | |
-| Largest prompt from one request | 3,022,388 chars | 3,022,388 | **60,000** | 60,000 | |
-| 2 MB `quote` / 1,000 `facts` sent to `/api/draft` | accepted | accepted | **rejected (422)** | rejected | |
-| Pipeline with a hung model | never ends | never ends | never ends | **stops with TIMEOUT at 90 s / 120 s** | |
-| One transient 503 | request fails | fails | fails | **retried, succeeds** | |
-| Error text shown for a Gemini 429 | 1,354 chars | 1,354 | 1,354 | **under 120 chars** | |
-| Overloaded main model | request fails | fails | fails | **optional fallback model** | |
-| Founder listed twice when a name has accents (`Täht` / `Taht`) | yes | yes | yes | **no** | |
-| Peak concurrent Gemini calls (60 requests) | 60 | 60 | 60 | 60 | |
+| | Baseline | After all six fixes |
+|---|---|---|
+| Offline suite: passed / failed | 134 / 35 | **265 / 0** |
+| Live suite | 11 passed | 8 passed, 3 skipped (Gemini overloaded) |
+| 40 MB page: bytes read | 40 MB | 2.5 MB |
+| Peak memory on gzip bomb | 326 MB | 18.3 MB |
+| Time to give up on a slow-loris server | 26 s | 12.0 s |
+| Page text from a 20,000-name structured-data block | 409,431 chars | 499 chars |
+| Text hidden with `font-size:0` reaches the page text | yes | no |
+| Largest prompt from one request | 3,022,388 chars | 60,000 chars |
+| 2 MB `quote` / 1,000 `facts` sent to `/api/draft` | accepted | rejected (422) |
+| Pipeline with a hung model | never ends | stops with TIMEOUT at 90 s / 120 s |
+| One transient 503 | request fails | retried, succeeds |
+| Error text shown for a Gemini 429 | 1,354 chars | under 120 chars |
+| Overloaded main model | request fails | optional fallback model |
+| Founder listed twice when a name has accents (`Täht` / `Taht`) | yes | no |
+| Peak concurrent Gemini calls (60 requests) | 60 | 6 |
+| Peak concurrent searches (40 requests) | 40 | 2 |
+| Opener containing a link, email or phone number passes the lint | yes (6 of 6) | no (0 of 6) |
+| Untrusted text fenced in prompts | no | yes |
+| Ports `:22`, `:6379`, `:9200` accepted | yes | refused |

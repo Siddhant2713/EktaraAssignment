@@ -4,6 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv()  # reads backend/.env if it exists
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name) or default))
+    except ValueError:
+        return default
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.1-flash-lite"
 # the model that writes the openers; extraction can stay on a cheap model, but the writing benefits from a better one
@@ -23,6 +30,11 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # decoded bytes read from one page; we onl
 PIPELINE_TIMEOUT = 90.0  # /api/analyze
 DRAFT_TIMEOUT = 120.0  # /api/draft: researches and then writes
 LLM_RETRY_DELAY = 1.5  # pause before the one retry of a transient Gemini error (jittered)
+
+# how many calls to each upstream service may be in flight at once, across ALL requests
+MAX_CONCURRENT_GEMINI = _int_env("MAX_CONCURRENT_GEMINI", 6)
+MAX_CONCURRENT_SEARCHES = _int_env("MAX_CONCURRENT_SEARCHES", 2)  # the keyless search backend throttles fast
+MAX_CONCURRENT_FETCHES = _int_env("MAX_CONCURRENT_FETCHES", 24)  # page downloads
 
 # the most text we put into one LLM prompt; later (lower-priority) pages are dropped first
 MAX_PROMPT_CHARS = 60_000

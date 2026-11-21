@@ -7,6 +7,7 @@ from app import config
 from app.schemas.events import ErrorCode
 from app.schemas.scrape import ScrapedPage
 from app.services.errors import PipelineError
+from app.services.limiter import search_slots
 
 log = logging.getLogger(__name__)
 STEP = "search"
@@ -26,7 +27,9 @@ async def search_pages(queries: list[str]) -> list[ScrapedPage]:
             break
         if i:
             await asyncio.sleep(QUERY_GAP)
-        for result in await _search(query):
+        async with search_slots.slot():  # shared by all requests: the backend throttles quickly
+            results = await _search(query)
+        for result in results:
             url, body, title = result.get("href"), result.get("body"), (result.get("title") or "")[:200]
             if url and body and len(url) <= MAX_URL_CHARS and url not in pages:
                 pages[url] = ScrapedPage(url=url, title=title, text=f"{title}. {body[:MAX_SNIPPET_CHARS]}")

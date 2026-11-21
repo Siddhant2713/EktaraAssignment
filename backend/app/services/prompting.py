@@ -1,7 +1,28 @@
+import re
+
 from app import config
 from app.schemas.scrape import ScrapedPage
 
 MIN_USEFUL_CHARS = 500  # a page with less room than this is not worth including
+
+
+def neutralize(text: str) -> str:
+    """Make untrusted text unable to write a tag of its own: < and > become entities."""
+    return text.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fence(tag: str, text: str) -> str:
+    """Wrap untrusted text in <tag>...</tag>. It cannot close the tag early, because its own < and > are escaped."""
+    return f"<{tag}>\n{neutralize(text)}\n</{tag}>"
+
+
+def inline(text: str, limit: int = 300) -> str:
+    """Make untrusted text safe for a one-line slot in a prompt: a single line, with no tag or code characters.
+
+    Used for company and person names, and for text the model itself wrote from a web page, because that text
+    is copied into later prompts (including system prompts), where an injected instruction would carry more weight.
+    """
+    return re.sub(r"[<>`]", "", " ".join(text.split()))[:limit]
 
 
 def pages_block(pages: list[ScrapedPage], label: str, budget: int | None = None) -> tuple[str, list[ScrapedPage]]:
@@ -19,8 +40,9 @@ def pages_block(pages: list[ScrapedPage], label: str, budget: int | None = None)
         room = remaining - len(header)
         if room < MIN_USEFUL_CHARS:
             break
-        text = page.text[:room]
-        used.append(page if len(text) == len(page.text) else page.model_copy(update={"text": text}))
+        # "###" would let page text forge the header of another page; the model and the quote check see the same text
+        text = page.text.replace("###", "# # #")[:room]
+        used.append(page if text == page.text else page.model_copy(update={"text": text}))
         parts.append(header + text)
         remaining -= len(header) + len(text) + 2  # 2 for the blank line between pages
     return "\n\n".join(parts), used

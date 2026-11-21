@@ -15,6 +15,7 @@ from app import config
 from app.schemas.events import ErrorCode
 from app.schemas.scrape import ScrapedPage
 from app.services.errors import PipelineError
+from app.services.limiter import fetch_slots
 
 STEP = "scrape"
 
@@ -28,6 +29,7 @@ PAGE_SLUGS = [
 GUESS_PATHS = ["/about", "/team", "/about-us", "/founders", "/our-story", "/company"]
 SKIP_FIRST_SEGMENTS = {"blog", "news", "press", "careers", "jobs", "docs", "help", "support"}
 MAX_PATH_DEPTH = 2
+ALLOWED_PORTS = {80, 443, 8080, 8443}  # anything else turns the tool into a port scanner
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -126,6 +128,12 @@ async def _ensure_public(url: str) -> None:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise PipelineError(STEP, ErrorCode.INVALID_URL, "only http(s) URLs are supported")
     try:
+        port = parsed.port
+    except ValueError:
+        raise PipelineError(STEP, ErrorCode.INVALID_URL, "that URL has an invalid port")
+    if port is not None and port not in ALLOWED_PORTS:
+        raise PipelineError(STEP, ErrorCode.INVALID_URL, "only the standard web ports (80, 443, 8080, 8443) are allowed")
+    try:
         infos = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, None)
     except socket.gaierror:
         raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"could not resolve {parsed.hostname}")
@@ -137,11 +145,12 @@ async def _ensure_public(url: str) -> None:
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, str]:
     """GET a page and return (final_url, html), within FETCH_DEADLINE seconds in total."""
-    try:
-        async with asyncio.timeout(config.FETCH_DEADLINE):
-            return await _fetch_following_redirects(client, url)
-    except TimeoutError:
-        raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{url} took too long to load")
+    async with fetch_slots.slot():  # outside the deadline: time spent waiting for a slot is not the page's fault
+        try:
+            async with asyncio.timeout(config.FETCH_DEADLINE):
+                return await _fetch_following_redirects(client, url)
+        except TimeoutError:
+            raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{url} took too long to load")
 
 
 async def _fetch_following_redirects(client: httpx.AsyncClient, url: str) -> tuple[str, str]:

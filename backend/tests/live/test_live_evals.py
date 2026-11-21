@@ -5,8 +5,8 @@ Run with `pytest --live`. Needs network and a working Gemini key. Upstream troub
 
 import pytest
 
-from app.schemas.events import ErrorCode
 from app.services.analyzer import analyze
+from tests.live.helpers import upstream_trouble
 from tests.support.helpers import collect, terminal
 
 pytestmark = [pytest.mark.live, pytest.mark.timeout(150)]
@@ -26,13 +26,15 @@ GOLDEN = [
 
 @pytest.mark.parametrize("url, must_find, must_not_find, why", GOLDEN, ids=[g[0].split("//")[1] for g in GOLDEN])
 async def test_founder_extraction(url, must_find, must_not_find, why):
-    end = terminal(await collect(analyze(url)))[0]
-    if end.type == "error" and (end.code in (ErrorCode.LLM_FAILED, ErrorCode.SEARCH_FAILED) or "Gemini request failed" in end.message):
-        pytest.skip(f"upstream unavailable: {end.message[:80]}")
-    assert end.type == "result", f"{why}: {end.message}"
-    names = [f["name"] for f in end.data["founders"]]
+    events = await collect(analyze(url))
+    end = terminal(events)[0]
+    names = [f["name"] for f in end.data["founders"]] if end.type == "result" else []
     joined = " | ".join(names)
     missing = [n for n in must_find if n.lower() not in joined.lower()]
     wrong = [n for n in must_not_find if n.lower() in joined.lower()]
+
+    if (end.type == "error" or missing) and (reason := upstream_trouble(events)):
+        pytest.skip(f"upstream unavailable: {reason[:90]}")
+    assert end.type == "result", f"{why}: {end.message}"
     assert not missing, f"missed {missing} ({why}); got {names}"
     assert not wrong, f"wrongly included {wrong} ({why}); got {names}"
