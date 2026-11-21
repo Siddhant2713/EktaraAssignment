@@ -6,6 +6,7 @@ from app import config
 from app.schemas.analyze import AnalyzeResult
 from app.schemas.company import Company, Founder
 from app.schemas.events import ErrorCode, ErrorEvent, Event, ProgressEvent, ResultEvent
+from app.services.deadline import with_deadline
 from app.services.errors import PipelineError
 from app.services.extractor import extract_company_and_founders
 from app.services.scraper import scrape_site
@@ -17,7 +18,7 @@ log = logging.getLogger(__name__)
 SITE_UNUSABLE = {ErrorCode.SITE_BLOCKED, ErrorCode.NO_CONTENT, ErrorCode.SITE_UNREACHABLE}
 
 
-async def analyze(url: str) -> AsyncIterator[Event]:
+async def _analyze(url: str) -> AsyncIterator[Event]:
     """scrape -> extract, then fall back to web search when the site can't tell us the founders."""
     try:
         if not config.GEMINI_API_KEY:
@@ -89,3 +90,8 @@ async def analyze(url: str) -> AsyncIterator[Event]:
     except Exception:
         log.exception("unexpected failure while analyzing %s", url)
         yield ErrorEvent(step="unknown", code=ErrorCode.INTERNAL_ERROR, message="something went wrong on the server")
+
+
+def analyze(url: str) -> AsyncIterator[Event]:
+    """The analysis pipeline, stopped with a TIMEOUT error if it takes longer than config.PIPELINE_TIMEOUT."""
+    return with_deadline(_analyze(url), config.PIPELINE_TIMEOUT)

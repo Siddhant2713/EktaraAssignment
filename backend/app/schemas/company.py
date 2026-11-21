@@ -1,7 +1,12 @@
 from html import unescape
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.limits import clip
+
+MAX_NAME_CHARS = 100
+MAX_ONE_LINER_CHARS = 300
 
 
 class UnescapedModel(BaseModel):
@@ -14,8 +19,17 @@ class UnescapedModel(BaseModel):
 
 
 class Company(UnescapedModel):
-    name: str = Field(description="Company or product name")
-    one_liner: str = Field(description="One plain sentence on what the company does")
+    """A company as the API sees it. Too-long text is rejected (this class is also used for request bodies)."""
+
+    name: str = Field(max_length=MAX_NAME_CHARS, description="Company or product name")
+    one_liner: str = Field(max_length=MAX_ONE_LINER_CHARS, description="One plain sentence on what the company does")
+
+
+class ExtractedCompany(UnescapedModel):
+    """What the LLM returns for the company. Too-long text is cut, not refused."""
+
+    name: Annotated[str, clip(MAX_NAME_CHARS)] = Field(description="Company or product name")
+    one_liner: Annotated[str, clip(MAX_ONE_LINER_CHARS)] = Field(description="One plain sentence on what the company does")
 
 
 class Founder(UnescapedModel):

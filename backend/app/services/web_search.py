@@ -14,6 +14,8 @@ STEP = "search"
 ATTEMPTS = 2  # the search library fails intermittently; differently worded queries act as extra retries
 QUERY_GAP = 1.0  # seconds between queries; firing them back to back gets rate limited
 ENOUGH_RESULTS = 8  # stop querying once we have this many distinct results
+MAX_URL_CHARS = 500  # longer URLs cannot be cited as a source
+MAX_SNIPPET_CHARS = 1000
 
 
 async def search_pages(queries: list[str]) -> list[ScrapedPage]:
@@ -25,9 +27,9 @@ async def search_pages(queries: list[str]) -> list[ScrapedPage]:
         if i:
             await asyncio.sleep(QUERY_GAP)
         for result in await _search(query):
-            url, body, title = result.get("href"), result.get("body"), result.get("title", "")
-            if url and body and url not in pages:
-                pages[url] = ScrapedPage(url=url, title=title, text=f"{title}. {body}")
+            url, body, title = result.get("href"), result.get("body"), (result.get("title") or "")[:200]
+            if url and body and len(url) <= MAX_URL_CHARS and url not in pages:
+                pages[url] = ScrapedPage(url=url, title=title, text=f"{title}. {body[:MAX_SNIPPET_CHARS]}")
 
     if not pages:
         raise PipelineError(STEP, ErrorCode.SEARCH_FAILED, "the web search returned nothing (it may be rate limited)")

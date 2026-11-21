@@ -1,12 +1,24 @@
 import logging
 import re
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
 from app.schemas.company import Company, UnescapedModel
-from app.schemas.draft import Fact, FactKind, Person
+from app.schemas.draft import (
+    MAX_DATE_CHARS,
+    MAX_FACT_QUOTE,
+    MAX_FACT_TEXT,
+    MAX_TITLE_CHARS,
+    MAX_URL_CHARS,
+    Fact,
+    FactKind,
+    Person,
+)
+from app.schemas.limits import clip, first
 from app.schemas.scrape import ScrapedPage
 from app.services.llm import generate_json
+from app.services.prompting import pages_block
 from app.services.researcher import research_person
 from app.services.textmatch import has_word, norm
 
@@ -45,15 +57,17 @@ Rules:
 
 
 class ExtractedFact(UnescapedModel):
-    text: str
-    quote: str
+    """What the LLM returns. Over-long values are cut; a cut quote is still a verbatim prefix, so it still verifies."""
+
+    text: Annotated[str, clip(MAX_FACT_TEXT)]
+    quote: Annotated[str, clip(MAX_FACT_QUOTE)]
     kind: FactKind
     specificity: int = Field(description="1 to 5")
-    date: str | None
+    date: Annotated[str | None, clip(MAX_DATE_CHARS)]
 
 
 class FactsOutput(BaseModel):
-    facts: list[ExtractedFact]
+    facts: Annotated[list[ExtractedFact], first(20)]
 
 
 async def research_facts(person: Person, company: Company, company_site: str) -> list[Fact]:
@@ -64,8 +78,9 @@ async def research_facts(person: Person, company: Company, company_site: str) ->
     pages = await research_person(person, company.name)
     if not pages:
         return []
-    extracted = await _extract(person, company, pages)
-    verified = verify_facts(extracted, pages, person, company, company_site)
+    prompt, sent = pages_block(pages, "PAGE")  # capped; `sent` is exactly what the model gets to see
+    extracted = await _extract(person, company, prompt)
+    verified = verify_facts(extracted, sent, person, company, company_site)
     return select_facts(verified, FACTS_PER_PERSON)
 
 
@@ -74,14 +89,13 @@ def number_facts(facts: list[Fact]) -> list[Fact]:
     return [fact.model_copy(update={"id": i}) for i, fact in enumerate(facts, start=1)]
 
 
-async def _extract(person: Person, company: Company, pages: list[ScrapedPage]) -> list[ExtractedFact]:
+async def _extract(person: Person, company: Company, prompt: str) -> list[ExtractedFact]:
     system_prompt = SYSTEM_PROMPT.format(
         name=person.name,
         role=f" ({person.role})" if person.role else "",
         company=company.name,
         one_liner=company.one_liner.rstrip("."),
     )
-    prompt = "\n\n".join(f"### PAGE: {p.url}\n(title: {p.title})\n{p.text}" for p in pages)
     result = await generate_json(step=STEP, system_prompt=system_prompt, prompt=prompt, schema=FactsOutput)
     return result.facts
 
@@ -111,7 +125,10 @@ def verify_facts(
             (
                 page
                 for page, text in page_texts
-                if quote in text and has_word(text, last_name) and any(term and term in text for term in company_terms)
+                if len(page.url) <= MAX_URL_CHARS
+                and quote in text
+                and has_word(text, last_name)
+                and any(term and term in text for term in company_terms)
             ),
             None,
         )
@@ -121,12 +138,12 @@ def verify_facts(
         seen_quotes.add(quote)
         kept.append(
             Fact(
-                id=0,  # numbered once all founders are processed
+                id=1,  # placeholder: number_facts() renumbers once all founders are processed
                 person=person.name,
                 text=item.text.strip(),
                 quote=item.quote.strip(),
                 source_url=source.url,
-                source_title=source.title or source.url,
+                source_title=(source.title or source.url)[:MAX_TITLE_CHARS],
                 kind=item.kind,
                 specificity=min(max(item.specificity, 1), 5),
                 date=item.date,

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from app import config
 from app.schemas.draft import DraftRequest, DraftResult, Fact
 from app.schemas.events import ErrorCode, ErrorEvent, Event, ProgressEvent, ResultEvent
+from app.services.deadline import with_deadline
 from app.services.drafter import draft_openers
 from app.services.errors import PipelineError
 from app.services.fact_extractor import number_facts, research_facts
@@ -11,7 +12,7 @@ from app.services.fact_extractor import number_facts, research_facts
 log = logging.getLogger(__name__)
 
 
-async def draft(request: DraftRequest) -> AsyncIterator[Event]:
+async def _draft(request: DraftRequest) -> AsyncIterator[Event]:
     """research -> write openers. Cached facts in the request skip the research (that is what regenerate sends)."""
     try:
         if not config.GEMINI_API_KEY:
@@ -52,3 +53,8 @@ async def draft(request: DraftRequest) -> AsyncIterator[Event]:
     except Exception:
         log.exception("unexpected failure while drafting for %s", request.url)
         yield ErrorEvent(step="unknown", code=ErrorCode.INTERNAL_ERROR, message="something went wrong on the server")
+
+
+def draft(request: DraftRequest) -> AsyncIterator[Event]:
+    """The drafting pipeline, stopped with a TIMEOUT error if it takes longer than config.DRAFT_TIMEOUT."""
+    return with_deadline(_draft(request), config.DRAFT_TIMEOUT)

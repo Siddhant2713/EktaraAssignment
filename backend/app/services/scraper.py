@@ -3,6 +3,7 @@ import ipaddress
 import json
 import re
 import socket
+import zlib
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
@@ -31,12 +32,31 @@ MAX_PATH_DEPTH = 2
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml",
+    # we decompress by hand (see _read_body), and only these two
+    "Accept-Encoding": "gzip, deflate",
 }
 MAX_REDIRECTS = 5
 BLOCKED_STATUSES = {401, 403, 429, 503}
 MIN_EXTRACTED_CHARS = 200  # below this, trafilatura probably missed the content
 MAX_PROFILE_LINKS = 8
-LINKEDIN_PERSON = re.compile(r"^https?://([a-z]{2,3}\.)?linkedin\.com/in/[^/?#]+", re.I)
+MAX_HINT_NAMES = 5
+MAX_URL_CHARS = 150  # profile links in hints
+MAX_LINK_CHARS = 500  # candidate pages: longer URLs cannot be cited as a source
+LINKEDIN_PERSON = re.compile(r"^https?://([a-z]{2,3}\.)?linkedin\.com/in/[\w\-%.]+$", re.I)
+
+# A person's name: 1 to 5 words of letters, with ' - . allowed inside a word. Structured data is written by the
+# site, so anything else (sentences, digits, brackets, line breaks) is not trusted as a name.
+_NAME_WORD = r"[^\W\d_](?:[^\W\d_]|['\u2019.\-])*"
+NAME = re.compile(rf"{_NAME_WORD}(?: {_NAME_WORD}){{0,4}}")
+MAX_NAME_CHARS = 60
+MAX_JSON_DEPTH = 8
+
+# Inline styles that hide text from visitors but not from a scraper
+HIDDEN_STYLE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?![\d.])|opacity\s*:\s*0(?![\d.])"
+    r"|text-indent\s*:\s*-\d{4,}|(?:left|top)\s*:\s*-\d{4,}",
+    re.I,
+)
 
 
 def _client() -> httpx.AsyncClient:
@@ -116,31 +136,80 @@ async def _ensure_public(url: str) -> None:
 
 
 async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, str]:
-    """GET a page, following redirects by hand so every hop is checked. Returns (final_url, html)."""
+    """GET a page and return (final_url, html), within FETCH_DEADLINE seconds in total."""
+    try:
+        async with asyncio.timeout(config.FETCH_DEADLINE):
+            return await _fetch_following_redirects(client, url)
+    except TimeoutError:
+        raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{url} took too long to load")
+
+
+async def _fetch_following_redirects(client: httpx.AsyncClient, url: str) -> tuple[str, str]:
+    """Follow redirects by hand so every hop goes through the SSRF check."""
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         await _ensure_public(current)
         try:
-            resp = await client.get(current)
+            async with client.stream("GET", current) as resp:
+                if resp.is_redirect:
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{current} sent a bad redirect")
+                    current = urljoin(current, location)
+                    continue
+                if resp.status_code in BLOCKED_STATUSES:
+                    raise PipelineError(
+                        STEP, ErrorCode.SITE_BLOCKED, f"{current} refused the request (HTTP {resp.status_code})"
+                    )
+                if resp.status_code >= 400:
+                    raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{current} returned HTTP {resp.status_code}")
+                if "html" not in resp.headers.get("content-type", ""):
+                    raise PipelineError(STEP, ErrorCode.NO_CONTENT, f"{current} is not an HTML page")
+                return current, await _read_body(resp, current)
         except httpx.TimeoutException:
             raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{current} timed out")
         except httpx.HTTPError as e:
             raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"could not connect to {current} ({type(e).__name__})")
-
-        if resp.is_redirect:
-            location = resp.headers.get("location")
-            if not location:
-                raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{current} sent a bad redirect")
-            current = urljoin(current, location)
-            continue
-        if resp.status_code in BLOCKED_STATUSES:
-            raise PipelineError(STEP, ErrorCode.SITE_BLOCKED, f"{current} refused the request (HTTP {resp.status_code})")
-        if resp.status_code >= 400:
-            raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, f"{current} returned HTTP {resp.status_code}")
-        if "html" not in resp.headers.get("content-type", ""):
-            raise PipelineError(STEP, ErrorCode.NO_CONTENT, f"{current} is not an HTML page")
-        return current, resp.text
     raise PipelineError(STEP, ErrorCode.SITE_UNREACHABLE, "too many redirects")
+
+
+async def _read_body(resp: httpx.Response, url: str) -> str:
+    """Read at most MAX_RESPONSE_BYTES of the DECODED body, then stop (the connection is dropped).
+
+    httpx can decompress for us, but its decoder expands each network chunk in one go, so a tiny gzip bomb
+    would still inflate to tens of MB before our code sees any of it. So we read the raw bytes and
+    decompress ourselves, asking zlib for at most the room we have left.
+    """
+    cap = config.MAX_RESPONSE_BYTES
+    encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+    if encoding in ("", "identity"):
+        decoder = None
+    elif encoding in ("gzip", "x-gzip"):
+        decoder = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    elif encoding == "deflate":
+        decoder = zlib.decompressobj()
+    else:
+        raise PipelineError(STEP, ErrorCode.NO_CONTENT, f"{url} uses an unsupported content encoding ({encoding})")
+
+    body = bytearray()
+    try:
+        async for chunk in resp.aiter_raw():
+            if decoder is None:
+                body += chunk[: cap - len(body)]
+            else:
+                data = chunk
+                while data and len(body) < cap and not decoder.eof:
+                    body += decoder.decompress(data, cap - len(body))
+                    data = decoder.unconsumed_tail
+            if len(body) >= cap or (decoder is not None and decoder.eof):
+                break
+    except zlib.error:
+        raise PipelineError(STEP, ErrorCode.NO_CONTENT, f"{url} sent a corrupt compressed response")
+
+    try:
+        return bytes(body).decode(resp.charset_encoding or "utf-8", errors="replace")
+    except LookupError:  # the page named a charset Python does not know
+        return bytes(body).decode("utf-8", errors="replace")
 
 
 def _parse(url: str, html: str) -> tuple[ScrapedPage, list[str]]:
@@ -150,11 +219,12 @@ def _parse(url: str, html: str) -> tuple[ScrapedPage, list[str]]:
     except (ParserError, ValueError):
         return ScrapedPage(url=url, title="", text=""), []
 
-    title = " ".join((tree.findtext(".//title") or "").split())
+    title = " ".join((tree.findtext(".//title") or "").split())[:200]
     links = _candidate_links(tree, url)
     hints = _structured_hints(tree, url)  # read before scripts get stripped below
 
-    text = trafilatura.extract(html, url=url, favor_recall=True) or ""
+    _strip_hidden(tree)  # after the links and hints above, which may legitimately live in hidden parts
+    text = trafilatura.extract(lxml_html.tostring(tree, encoding="unicode"), url=url, favor_recall=True) or ""
     if len(text) < MIN_EXTRACTED_CHARS:
         for el in tree.xpath("//script|//style|//noscript"):
             el.drop_tree()
@@ -164,6 +234,15 @@ def _parse(url: str, html: str) -> tuple[ScrapedPage, list[str]]:
     if text:  # hints are added after truncation so a long page can't push them out
         text = "\n".join([text, *hints])
     return ScrapedPage(url=url, title=title, text=text), links
+
+
+def _strip_hidden(tree) -> None:
+    """Remove elements a visitor cannot see. Hidden text is a standard way to smuggle instructions to a scraper."""
+    for el in tree.xpath("//*[@hidden or @aria-hidden='true']"):
+        el.drop_tree()
+    for el in tree.xpath("//*[@style]"):
+        if HIDDEN_STYLE.search(el.get("style", "")):
+            el.drop_tree()
 
 
 def _key(url: str) -> str:
@@ -194,7 +273,7 @@ def _candidate_links(tree, base_url: str) -> list[str]:
         if segments[-1] not in PAGE_SLUGS:
             continue
         clean = parsed._replace(query="").geturl()
-        if _key(clean) == _key(base_url):
+        if _key(clean) == _key(base_url) or len(clean) > MAX_LINK_CHARS:
             continue
         rank = (PAGE_SLUGS.index(segments[-1]), len(parsed.path))
         ranked[clean] = min(rank, ranked.get(clean, rank))
@@ -227,27 +306,30 @@ def _structured_hints(tree, base_url: str) -> list[str]:
 
 
 def _json_ld_founders(tree) -> list[str]:
-    """Names from schema.org JSON-LD blocks ({"@type": "Organization", "founder": ...})."""
+    """Names from schema.org JSON-LD blocks ({"@type": "Organization", "founder": ...}), validated and capped."""
     names: list[str] = []
     for script in tree.xpath('//script[@type="application/ld+json"]'):
         try:
             data = json.loads(script.text or "")
-        except ValueError:
+        except (ValueError, RecursionError):  # not JSON, or nested deeper than Python can parse
             continue
-        _collect_founders(data, names)
-    return list(dict.fromkeys(n for n in names if n))
+        _collect_founders(data, names, depth=0)
+    valid = (n for n in names if len(n) <= MAX_NAME_CHARS and NAME.fullmatch(n))
+    return list(dict.fromkeys(valid))[:MAX_HINT_NAMES]
 
 
-def _collect_founders(node, names: list[str]) -> None:
+def _collect_founders(node, names: list[str], depth: int) -> None:
+    if depth > MAX_JSON_DEPTH or len(names) > 10 * MAX_HINT_NAMES:
+        return
     if isinstance(node, list):
         for item in node:
-            _collect_founders(item, names)
+            _collect_founders(item, names, depth + 1)
     elif isinstance(node, dict):
         for key in ("founder", "founders"):
             _add_names(node.get(key), names)
         for value in node.values():  # JSON-LD often nests objects, e.g. under "@graph"
             if isinstance(value, (list, dict)):
-                _collect_founders(value, names)
+                _collect_founders(value, names, depth + 1)
 
 
 def _add_names(value, names: list[str]) -> None:
@@ -256,7 +338,7 @@ def _add_names(value, names: list[str]) -> None:
     elif isinstance(value, dict) and isinstance(value.get("name"), str):
         names.append(value["name"].strip())
     elif isinstance(value, list):
-        for item in value:
+        for item in value[: 10 * MAX_HINT_NAMES]:
             _add_names(item, names)
 
 
@@ -265,7 +347,7 @@ def _linkedin_links(tree, base_url: str) -> list[str]:
     found: dict[str, str] = {}
     for a in tree.xpath("//a[@href]"):
         url = urldefrag(urljoin(base_url, a.get("href")))[0].split("?")[0]
-        if LINKEDIN_PERSON.match(url) and url not in found:
-            label = " ".join(a.text_content().split())[:40]
+        if len(url) <= MAX_URL_CHARS and LINKEDIN_PERSON.match(url) and url not in found:
+            label = re.sub(r"[\[\]]", "", " ".join(a.text_content().split()))[:40]  # brackets would break the hint line
             found[url] = label or "link"
     return [f"{label} -> {url}" for url, label in list(found.items())[:MAX_PROFILE_LINKS]]

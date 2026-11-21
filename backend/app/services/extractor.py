@@ -1,11 +1,13 @@
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.company import Company, Founder, UnescapedModel
+from app.schemas.company import Company, ExtractedCompany, Founder, UnescapedModel
+from app.schemas.limits import clip, first
 from app.schemas.scrape import ScrapedPage
 from app.services.llm import generate_json
+from app.services.prompting import pages_block
 from app.services.textmatch import has_word, norm
 
 log = logging.getLogger(__name__)
@@ -49,18 +51,20 @@ KEEP = ("founder", "cofounder", "ceo")  # relationships that become Founder resu
 
 
 class ExtractedPerson(UnescapedModel):
-    name: str
-    role: str | None
+    name: Annotated[str, clip(100)]
+    role: Annotated[str | None, clip(100)]
     relationship: Relationship
     confidence: float
-    evidence: str
+    evidence: Annotated[str, clip(500)]
 
 
 class ExtractionOutput(BaseModel):
     """The JSON shape Gemini must return."""
 
-    company: Company
-    people: list[ExtractedPerson] = Field(description="Everyone named with a founder/CEO title, tagged by relationship")
+    company: ExtractedCompany
+    people: Annotated[list[ExtractedPerson], first(50)] = Field(
+        description="Everyone named with a founder/CEO title, tagged by relationship"
+    )
 
 
 async def extract_company_and_founders(
@@ -76,13 +80,14 @@ async def extract_company_and_founders(
     `domain` / `company_hint` (what the company does) help reject namesake companies.
     """
     label = "RESULT" if source == "web" else "PAGE"
-    prompt = "\n\n".join(f"### {label}: {p.url}\n(title: {p.title})\n{p.text}" for p in pages)
+    prompt, sent = pages_block(pages, label)  # capped; `sent` is exactly what the model gets to see
     system_prompt = SYSTEM_PROMPT
     if source == "web":
         about = f" (which {company_hint.rstrip('.')})" if company_hint else ""
         system_prompt += WEB_ADDENDUM.format(domain=domain, about=about)
     result = await generate_json(step=STEP, system_prompt=system_prompt, prompt=prompt, schema=ExtractionOutput)
-    return result.company, verified_founders(result.people, pages, source)
+    company = Company(name=result.company.name.strip(), one_liner=result.company.one_liner.strip())
+    return company, verified_founders(result.people, sent, source)
 
 
 def verified_founders(

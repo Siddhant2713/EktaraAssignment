@@ -1,12 +1,15 @@
 import logging
 import re
 
+from typing import Annotated
+
 from pydantic import BaseModel
 
 from app.schemas.company import Company
 from app import config
 from app.schemas.draft import Fact, Opener, Person, Tone
 from app.schemas.events import ErrorCode
+from app.schemas.limits import first
 from app.services.errors import PipelineError
 from app.services.llm import generate_json
 
@@ -74,7 +77,7 @@ UNMARKED_QUESTION = re.compile(
 
 
 class DraftOutput(BaseModel):
-    openers: list[Opener]
+    openers: Annotated[list[Opener], first(20)]
 
 
 async def draft_openers(

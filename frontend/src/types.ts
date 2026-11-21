@@ -34,6 +34,7 @@ export type ErrorCode =
   | 'NO_CONTENT'
   | 'LLM_FAILED'
   | 'SEARCH_FAILED'
+  | 'TIMEOUT'
   | 'INTERNAL_ERROR'
 
 export type ProgressEvent = { type: 'progress'; step: string; message: string }

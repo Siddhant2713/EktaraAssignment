@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from html import unescape
 
 _PUNCTUATION = str.maketrans(
@@ -7,8 +8,13 @@ _PUNCTUATION = str.maketrans(
 
 
 def norm(text: str) -> str:
-    """Make text comparable: decode entities, straighten quotes, ignore case and whitespace."""
-    return " ".join(unescape(text).translate(_PUNCTUATION).casefold().split())
+    """Make text comparable: decode entities, straighten quotes, drop accents, ignore case and whitespace.
+
+    Dropping accents makes "Täht" and "Taht" the same name (sites and models spell people both ways).
+    """
+    decomposed = unicodedata.normalize("NFKD", unescape(text).translate(_PUNCTUATION))
+    plain = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(plain.casefold().split())
 
 
 def has_word(text: str, word: str) -> bool:

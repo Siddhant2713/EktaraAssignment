@@ -8,6 +8,7 @@ const HINTS: Record<ErrorCode, string> = {
   NO_CONTENT: 'The page has no readable text. It may build its content with JavaScript.',
   LLM_FAILED: 'The AI step failed. Trying again often works.',
   SEARCH_FAILED: 'The web search returned nothing. Trying again often works.',
+  TIMEOUT: 'This took too long and was stopped. Trying again often works.',
   INTERNAL_ERROR: 'Something went wrong.',
 }
 
