@@ -1,4 +1,5 @@
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,9 +13,13 @@ for noisy in ("httpx", "httpx2", "primp", "ddgs", "google_genai"):
 
 app = FastAPI(title="Ektara")
 
+# the Vite dev server, plus any deployed frontend listed in CORS_ORIGINS (comma separated)
+_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_origins += [o.strip().rstrip("/") for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vite dev server
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
