@@ -1,12 +1,11 @@
 import { useState } from 'react'
-import type { FormEvent } from 'react'
-import './App.css'
 import { streamAnalyze } from './api/analyze'
+import { AppShell } from './components/AppShell'
 import { DraftPanel } from './components/DraftPanel'
-import { ErrorBanner } from './components/ErrorBanner'
 import { FounderConfirm } from './components/FounderConfirm'
-import { ProgressLog } from './components/ProgressLog'
 import { useStreamTask } from './hooks/useStreamTask'
+import { Analyzing } from './pages/Analyzing'
+import { Landing } from './pages/Landing'
 import type { AnalyzeResult, Person } from './types'
 
 function App() {
@@ -14,51 +13,46 @@ function App() {
   const [analyzedUrl, setAnalyzedUrl] = useState('') // the URL that was analyzed, even if the input is edited later
   const [confirmed, setConfirmed] = useState<Person[] | null>(null)
   const analysis = useStreamTask<string, AnalyzeResult>(streamAnalyze)
-  const running = analysis.phase === 'running'
 
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault()
+  function startAnalysis() {
     setConfirmed(null)
     setAnalyzedUrl(url)
     analysis.run(url)
   }
 
+  function startOver() {
+    setConfirmed(null)
+    analysis.reset()
+  }
+
+  const result = analysis.phase === 'done' ? analysis.result : null
+
   return (
-    <main>
-      <h1>Ektara</h1>
-      <form onSubmit={handleSubmit} className="url-form">
-        <input
-          type="url"
-          placeholder="https://example.com"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          required
+    <AppShell step={result ? (confirmed ? 2 : 1) : analysis.phase === 'idle' ? null : 0} onHome={startOver}>
+      {analysis.phase === 'idle' && <Landing url={url} onUrlChange={setUrl} onSubmit={startAnalysis} />}
+
+      {(analysis.phase === 'running' || analysis.phase === 'error') && (
+        <Analyzing
+          url={analyzedUrl}
+          phase={analysis.phase}
+          progress={analysis.progress}
+          error={analysis.error}
+          onCancel={startOver}
         />
-        <button type="submit" disabled={running}>
-          {running ? 'Working…' : 'Go'}
-        </button>
-      </form>
-
-      {!confirmed && <ProgressLog messages={analysis.progress} running={running} />}
-
-      {analysis.phase === 'error' && analysis.error && (
-        <ErrorBanner code={analysis.error.code} message={analysis.error.message} onRetry={analysis.reset} />
       )}
 
-      {analysis.phase === 'done' && analysis.result && !confirmed && (
-        <FounderConfirm result={analysis.result} onConfirm={setConfirmed} />
-      )}
+      {result && !confirmed && <FounderConfirm result={result} onConfirm={setConfirmed} />}
 
-      {analysis.phase === 'done' && analysis.result && confirmed && (
+      {result && confirmed && (
         <DraftPanel
           key={confirmed.map((p) => p.name).join('|')}
           url={analyzedUrl}
-          company={analysis.result.company}
+          company={result.company}
           founders={confirmed}
           onChangeFounders={() => setConfirmed(null)}
         />
       )}
-    </main>
+    </AppShell>
   )
 }
 

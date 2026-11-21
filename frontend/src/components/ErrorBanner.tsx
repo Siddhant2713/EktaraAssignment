@@ -1,4 +1,5 @@
 import type { ErrorCode } from '../types'
+import { Alert } from './icons'
 
 const HINTS: Record<ErrorCode, string> = {
   CONFIG_MISSING: 'The backend has no Gemini API key. Add it to backend/.env and restart the server.',
@@ -16,16 +17,20 @@ type Props = {
   code: ErrorCode
   message: string
   onRetry: () => void
+  retryLabel?: string
 }
 
-export function ErrorBanner({ code, message, onRetry }: Props) {
+export function ErrorBanner({ code, message, onRetry, retryLabel = 'Try again' }: Props) {
   return (
-    <div className="error" role="alert">
-      <strong>{HINTS[code]}</strong>
-      <p>{message}</p>
-      <button type="button" onClick={onRetry}>
-        Try again
-      </button>
+    <div className="banner banner-error" role="alert">
+      <Alert />
+      <div className="banner-body">
+        <strong className="banner-title">{HINTS[code]}</strong>
+        <span className="banner-detail">{message}</span>
+        <button type="button" className="btn btn-sm" onClick={onRetry}>
+          {retryLabel}
+        </button>
+      </div>
     </div>
   )
 }

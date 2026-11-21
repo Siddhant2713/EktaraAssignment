@@ -1,0 +1,37 @@
+/* Design tokens (light theme only). Change colours, type and radii here and the whole UI follows. */
+:root {
+  color-scheme: light;
+
+  --bg: #f4efe6;
+  --surface: #fbf8f2;
+  --surface-2: #eee6d8;
+  --ink: #1c1814;
+  --ink-2: #5a5146;
+  --ink-3: #756b5f;
+  --line: #ddd3c2;
+  --line-strong: #c4b8a3;
+
+  --accent: #c2410c;
+  --accent-hover: #a73608;
+  --accent-ink: #fffaf5;
+  --accent-soft: #f7ded0;
+
+  --ok: #3b6b47;
+  --ok-soft: #dcebdd;
+  --warn: #8a5a06;
+  --warn-soft: #f6e8c6;
+  --danger: #b42318;
+  --danger-soft: #f8dcd8;
+
+  --font-display: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+  --font-body: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 22px;
+
+  --shadow: 0 1px 2px rgb(60 40 10 / 0.06), 0 8px 24px -12px rgb(60 40 10 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(60 40 10 / 0.08), 0 18px 40px -16px rgb(60 40 10 / 0.28);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
